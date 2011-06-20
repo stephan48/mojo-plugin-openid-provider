@@ -1,0 +1,14 @@
+<!doctype html><html>
+  <head><title>
+  	<%= title %></title>
+% if( my $username = stash 'username') 
+% {
+  	<link rel="openid.server"    href="<%= $self->url_for('openid')->to_abs %>" />
+	<link rel="openid.delegate"  href="<%= $self->url_for('user_page', { username => $username })->to_abs %>" /> 
+	<link rel="openid2.local_id" href="<%= $self->url_for('user_page', { username => $username })->to_abs %>" />
+	<link rel="openid2.provider" href="<%= $self->url_for('openid')->to_abs %>" />
+	<meta http-equiv="X-XRDS-Location" content="<%= $self->url_for('xrds', { username => $username })->to_abs %>" />
+% }
+  </head>
+  <body><%= content %></body>
+</html>

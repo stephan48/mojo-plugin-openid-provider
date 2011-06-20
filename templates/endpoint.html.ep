@@ -1,0 +1,4 @@
+% layout 'default';
+% title 'OpenID Endpoint';
+<p>This is an OpenID server endpoint, not a human-readable resource.<p>
+<p>For more information, see <a href='http://openid.net/'>http://openid.net/</a></p>

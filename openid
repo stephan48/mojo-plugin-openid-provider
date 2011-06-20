@@ -1,0 +1,341 @@
+#!/usr/bin/env perl
+# vim:set tabstop=2 shiftwidth=2 softtabstop=2 expandtab: 
+
+use lib 'lib';
+
+use Mojolicious::Lite;
+use Data::Dumper;
+use Mojo::Parameters;
+use Digest::SHA qw(sha1 sha1_hex sha1_base64 );
+
+my $config = plugin 'json_config';
+app->secret($config->{'secret'});
+delete $config->{'secret'};
+
+
+# Documentation browser under "/perldoc" (this plugin requires Perl 5.10)
+
+app->hook(before_dispatch => sub {
+  my $self = shift;
+  $self->req->url->base->scheme('http') if $self->req->headers->header('X-Forwarded-Protocol') eq 'http';
+  $self->req->url->base->scheme('https') if $self->req->headers->header('X-Forwarded-Protocol') eq 'https';
+});
+
+any [qw/post get/] => '/openid' => sub {
+  my $self    = shift;
+  my $mode    = $self->param("openid.mode") || '';
+  my $ns      = $self->param("openid.ns")   || '';
+  my $version = 0;
+
+  $self->app->log->debug("-------------------------------------------------");
+  $self->app->log->debug(sprintf("Mode: %s", $mode));
+  $self->app->log->debug(sprintf("NS: %s", $ns));
+  $self->app->log->debug("Current URI: ".$self->req->url);
+  $self->app->log->debug("Params: ".Dumper($self->req->params->to_hash));
+
+  if(!$mode)
+  {
+    $self->render("endpoint");
+	  return;
+  }
+
+  if(($ns eq "http://specs.openid.net/auth/2.0"))
+  {
+    $version = 2;
+  }
+  elsif(($ns eq "http://openid.net/signon/1.1") || ($ns eq "http://openid.net/signon/1.0") || !$ns)
+  {
+    $version = 1;
+  }
+  else
+  {
+    $self->render_text("I don't understand that!");
+    $self->res->code(400);
+    return;
+  }
+
+  $self->app->log->debug(sprintf("Version: %s", $version));
+  $self->app->log->debug(sprintf("Method: %s", $self->req->method));
+
+  if($mode eq "associate" && ($self->req->method eq "POST"))
+  {
+    my $assoc_type    = $self->param("openid.assoc_type")     || '';
+    my $session_type  = $self->param("openid.session_type")   || '';
+    $self->app->log->debug(sprintf("Assoc Type: %s", $assoc_type));
+    $self->app->log->debug(sprintf("Session Type: %s", $session_type));
+
+    if(!(($assoc_type eq 'HMAC-SHA1') || ($assoc_type eq 'HMAC-SHA256')))
+    {
+      $self->response_associate_type_error();
+      return;
+    }
+
+    if(!(($session_type eq 'DH-SHA1') || ($session_type eq 'DH-SHA256')  || (($session_type eq 'no-encryption') && $self->req->base->scheme eq 'https')))
+    {
+      $self->response_associate_type_error();
+      return;
+    }
+  
+    my $secret              = "uaSh2aimunah5ineolauneekoo1ocaethaij8eiraiphoeghee";
+    my $secret_expire_age   = 86400 * 14;
+    my $secret_gen_interval = 86400;
+
+    my $now = time();
+    my $sec_time = $now - ($now % $secret_gen_interval);
+
+    my $nonce = _rand_chars(20);
+    
+    my $handle = "$now:$nonce";
+
+    if ($assoc_type eq 'HMAC-SHA1') {
+        $handle .= ":" . substr(hmac_sha1_hex($handle, $secret), 0, 10);
+    }
+    elsif ($assoc_type eq 'HMAC-SHA256') {
+        $handle .= ":" . substr(hmac_sha256_hex($handle, $secret), 0, 16);
+    }
+
+    my $c_sec = $self->_secret_of_handle($handle, type=>$assoc_type);
+
+    my $expires = $sec_time + $secret_expire_age;    
+
+    my $exp_abs = $expires > 1000000000 ? $expires : $expires + $now;
+    
+
+
+    return;
+  }
+
+  if($mode eq "check_authentication")
+  {
+    $self->render_text("to be implemented!");
+    $self->res->code(400);  
+    return;
+  }
+
+  if($mode =~ /^checkid_(?:immediate|setup)/)
+  {
+    $self->render_text("to be implemented!");
+    $self->res->code(400);
+    return;
+  }
+
+  $self->app->log->debug("-------------------------------------------------");
+  $self->response_mode_unknown_error();
+} => "openid";
+
+app->helper( _rand_chars => sub {
+    shift if @_ == 2;  # shift off classname/obj, if called as method
+    my $length = shift;
+
+    my $chal = "";
+    my $digits = "abcdefghijklmnopqrstuvwzyzABCDEFGHIJKLMNOPQRSTUVWZYZ0123456789";
+    for (1..$length) {
+        $chal .= substr($digits, int(rand(62)), 1);
+    }
+    return $chal;
+});
+
+app->helper (  _secret_of_handle => sub {
+    my $self = shift;
+    my ($handle, %opts) = @_;
+
+    my $dumb_mode = delete $opts{'dumb'}      || 0;
+    my $no_verify = delete $opts{'no_verify'} || 0;
+    my $type = delete $opts{'type'} || 'HMAC-SHA1';
+    my %hmac_functions_hex=(
+                   'HMAC-SHA1'  =>\&hmac_sha1_hex,
+                   'HMAC-SHA256'=>\&hmac_sha256_hex,
+                  );
+    my %hmac_functions=(
+                   'HMAC-SHA1'  =>\&hmac_sha1,
+                   'HMAC-SHA256'=>\&hmac_sha256,
+                  );
+    my %nonce_80_lengths=(
+                          'HMAC-SHA1'=>10,
+                          'HMAC-SHA256'=>16,
+                         );
+    my $nonce_80_len=$nonce_80_lengths{$type};
+    my $hmac_function_hex=$hmac_functions_hex{$type} || Carp::croak "No function for $type";
+    my $hmac_function=$hmac_functions{$type} || Carp::croak "No function for $type";
+    Carp::croak("Unknown options: " . join(", ", keys %opts)) if %opts;
+
+    my ($time, $nonce, $nonce_sig80) = split(/:/, $handle);
+    return unless $time =~ /^\d+$/ && $nonce && $nonce_sig80;
+
+    # check_authentication mode only verifies signatures made with
+    # dumb (stateless == STLS) handles, so if that caller requests it,
+    # don't return the secrets here of non-stateless handles
+    return if $dumb_mode && $nonce !~ /^STLS\./;
+
+    my $sec_time = $time - ($time % $self->secret_gen_interval);
+    my $s_sec = $self->_get_server_secret($sec_time)  or return;
+
+    length($nonce)       == ($dumb_mode ? 25 : 20) or return;
+    length($nonce_sig80) == $nonce_80_len          or return;
+
+    return unless $no_verify || $nonce_sig80 eq substr($hmac_function_hex->("$time:$nonce", $s_sec), 0, $nonce_80_len);
+
+    return $hmac_function->($handle, $s_sec);
+}
+);
+
+app->helper( response_error => sub
+{
+  my $self              = shift;
+  my $additional_params = shift;
+
+  my $params = Mojo::Parameters->new(%{$additional_params});
+  $params->param('ns' => 'http://specs.openid.net/auth/2.0');
+  $params->param('openid.ns' => 'Type ');
+  $params->param('contact'   => 'info@stephan-jauernick.de');
+  $params->param('reference' => 'Mail me!');
+ 
+  my $string = $self->hash_to_kv($params->to_hash); 
+  $self->app->log->debug(sprintf("Response(Error): %s", $string ));
+
+  $self->res->code(400);
+  $self->res->body($string);
+  $self->render_text("$string");
+  return;
+}
+);
+
+app->helper( response_associate_type_error => sub 
+{
+  my $self              = shift;
+  my $additional_params = shift;
+
+  $additional_params    = $self->response_associate($additional_params);
+
+  my $params = Mojo::Parameters->new(%{$additional_params});
+
+  $params->param('error'        => 'Type not supported!');
+  $params->param('error_code'   => 'unsupported-type');
+  $params->param('session_type' => 'DH-SHA256');
+
+  $self->response_error($params->to_hash);
+  return;
+}
+);
+
+app->helper( response_associate => sub
+{
+  my $self              = shift;
+  my $additional_params = shift;
+
+  my $params = Mojo::Parameters->new(%{$additional_params});
+  $params->param('assoc_type'   => $self->param("openid.assoc_type"));
+  $params->param('session_type' => $self->param("openid.session_type"));
+  
+  return $params->to_hash;
+}
+);
+
+app->helper( response_mode_unknown_error => sub
+{
+  my $self              = shift;
+  my $additional_params = shift;
+
+  my $params = Mojo::Parameters->new(%{$additional_params});
+
+  $params->param('error'        => 'Mode not supported!');
+  $params->param('error_code'   => 'unsupported-mode');
+
+  $self->response_error($params->to_hash);
+  return;
+}
+);
+
+app->helper( response_success => sub 
+{
+  my $self              = shift;
+  my $additional_params = shift;
+
+  my $params = Mojo::Parameters->new($additional_params);
+  $params->param('ns' => 'http://specs.openid.net/auth/2.0');
+  $params->param('contact'   => 'info@stephan-jauernick.de');
+  $params->param('reference' => 'Mail me!');
+
+  my $string = $self->hash_to_kv($params->to_hash);
+  $self->app->log->debug(sprintf("Response(Success): %s", $string ));
+  $self->res->code(200);
+  $self->render_text($string);
+
+  return;
+}
+);
+
+app->helper( hash_to_kv => sub {
+  my ($self, $hash) = @_;
+  my $output;
+  $output = join(
+    "\n",
+        map( sprintf( q{%s:%s}, $_, $hash->{$_} ),
+            sort keys %{ $hash } )
+    )."\n";
+  return $output;
+});
+
+get '/xrds/(:username)' => sub {
+  my $self = shift;
+  $self->render(format => 'xml');
+} => "xrds";
+
+get '/user/(:username)' => sub {
+  my $self = shift;
+  $self->render('test');
+} => 'user_page';
+
+get '/' => sub {
+  my $self = shift;
+  $self->render('index');
+} => 'index';
+
+app->start;
+__DATA__
+
+@@ index.html.ep
+% layout 'default';
+% title 'Welcome';
+Welcome to Mojolicious!
+
+
+@@ test.html.ep
+% layout 'default';
+% title 'Test';
+OpenID Test for <%= $username %>!
+
+@@ layouts/default.html.ep
+<!doctype html><html>
+  <head><title>
+  	<%= title %></title>
+% if( my $username = stash 'username') 
+% {
+  	<link rel="openid.server"    href="<%= $self->url_for('openid')->to_abs %>" />
+	<link rel="openid.delegate"  href="<%= $self->url_for('user_page', { username => $username })->to_abs %>" /> 
+	<link rel="openid2.local_id" href="<%= $self->url_for('user_page', { username => $username })->to_abs %>" />
+	<link rel="openid2.provider" href="<%= $self->url_for('openid')->to_abs %>" />
+	<meta http-equiv="X-XRDS-Location" content="<%= $self->url_for('xrds', { username => $username })->to_abs %>" />
+% }
+  </head>
+  <body><%= content %></body>
+</html>
+@@ xrds.xml.ep
+<xrds:XRDS
+ xmlns:xrds="xri://$xrds"
+ xmlns="xri://$xrd*($v*2.0)">
+    <XRD>
+        <Service>
+            <Type>http://specs.openid.net/auth/2.0/signon</Type>
+            <URI><%= $self->url_for('openid')->to_abs %></URI>
+        </Service>
+        <Service
+         xmlns:openid="http://openid.net/xmlns/1.0" 
+         xmlns="xri://$xrd*($v*2.0)">
+            <Type>http://openid.net/signon/1.0</Type>
+            <URI><%= $self->url_for('openid')->to_abs %></URI>
+            <openid:Delegate><%= $self->url_for('openid')->to_abs %></openid:Delegate>
+        </Service>
+    </XRD>
+</xrds:XRDS>
+
