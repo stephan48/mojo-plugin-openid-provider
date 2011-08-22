@@ -1,17 +1,9 @@
-<xrds:XRDS
- xmlns:xrds="xri://$xrds"
- xmlns="xri://$xrd*($v*2.0)">
+<?xml version="1.0" encoding="UTF-8"?>
+<xrds:XRDS xmlns:xrds="xri://$xrds" xmlns="xri://$xrd*($v*2.0)" xmlns:openid="http://openid.net/xmlns/1.0">
     <XRD>
         <Service>
             <Type>http://specs.openid.net/auth/2.0/signon</Type>
             <URI><%= $self->url_for('openid')->to_abs %></URI>
-        </Service>
-        <Service
-         xmlns:openid="http://openid.net/xmlns/1.0" 
-         xmlns="xri://$xrd*($v*2.0)">
-            <Type>http://openid.net/signon/1.0</Type>
-            <URI><%= $self->url_for('openid')->to_abs %></URI>
-            <openid:Delegate><%= $self->url_for('openid')->to_abs %></openid:Delegate>
         </Service>
     </XRD>
 </xrds:XRDS>
