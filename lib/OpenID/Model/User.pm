@@ -1,2 +1,2 @@
 package OpenID::Model::User;
-use Mojo::Base 'MYDLjE::M';
+use Mojo::Base 'OpenID::Model';
